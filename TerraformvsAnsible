@@ -1,0 +1,144 @@
+## Terraform vs Ansible — and where CI/CD fits
+
+|                     | **Terraform**                                                            | **Ansible**                                                                    |
+| ------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| **Primary purpose** | *Provision* and change cloud/VM/network resources (“What should exist?”) | *Configure* and manage OS‑level state (“How should it be set up?”)             |
+| **Typical targets** | VMs, firewalls, DNS, S3/B2 buckets, Kubernetes clusters (via providers)  | Packages, files, services inside the OS; application deploys                   |
+| **Language**        | Declarative **HCL** (“This resource **should** look like…”)              | Imperative **YAML** tasks (“Run apt‑get, copy file…”)                          |
+| **State tracking**  | Keeps a versioned state file; plans show drift before apply              | Stateless by default (pushes changes each run); can record facts in hostvars   |
+| **Execution**       | Push (terraform apply) or remote back‑end (Terraform Cloud)              | Push via SSH / WinRM *or* pull with Ansible Pull                               |
+| **Idempotency**     | Built‑in: if resource matches state, no change                           | Tasks are designed to be idempotent, but author must choose idempotent modules |
+| **Speed**           | Fast API calls; minimal SSH                                              | SSH to every host, so slower on large fleets                                   |
+| **Typical cadence** | Infrequent but impactful infra changes                                   | Frequent config drift fixes, app deployments                                   |
+| **Best at**         | Multi‑cloud provisioning, immutable infra patterns                       | Fine‑grained OS tweaks, app rollouts, on‑host orchestration                    |
+
+> **Analogy:** Terraform builds the **factory**; Ansible sets up the **machines** inside the factory and keeps them running.
+
+---
+
+## How they complement each other in a simple pipeline
+
+```text
+┌──────────────┐           ┌───────────────┐          ┌─────────────┐
+│ GitHub PR    │ --lint--> │ Terraform Plan│ --apply→ │ New VM / K8s│
+└──────────────┘           └───────────────┘          └─────────────┘
+                                     │
+                                     │ inventory (.tf outputs)
+                                     ▼
+                             ┌────────────────┐
+                             │ Ansible Play   │
+                             │ (install Docker│
+                             │  deploy Theia) │
+                             └────────────────┘
+```
+
+1. **Terraform** provisions or updates infrastructure (DigitalOcean droplet, Cloudflare DNS, Backblaze bucket, etc.).
+2. Terras outputs the VM’s IP/DNS → saved to an **inventory file**.
+3. **Ansible** uses that inventory to:
+
+   * harden the host (users, firewall)
+   * install Docker/tailscale
+   * pull the latest Theia or Gitea container
+4. Your app is live; subsequent Ansible runs tweak configs without touching the underlying VM.
+
+---
+
+## Where CI/CD comes in (GitHub Actions example)
+
+| Stage              | Trigger                 | Tool                                  | What happens                          |
+| ------------------ | ----------------------- | ------------------------------------- | ------------------------------------- |
+| **Check**          | Pull‑request            | `terraform fmt` / `terraform plan`    | Lints + shows infra diff              |
+| **Provision**      | Merge to `main`         | `terraform apply`                     | Creates/changes infra                 |
+| **Configure**      | Post‑apply or code push | `ansible-playbook site.yml`           | Installs packages, deploys containers |
+| **App Build/Test** | Push to app repo        | Docker build, unit tests              | Validates code                        |
+| **Deploy**         | Tag/release             | Helm or `ansible-playbook deploy.yml` | Rolls out to K8s                      |
+
+All of this can live in **`.github/workflows/`**; each job runs in a fresh runner or on your self‑hosted runner.
+
+---
+
+## Getting started quickly
+
+### Terraform “hello world” (DigitalOcean droplet)
+
+```hcl
+provider "digitalocean" {
+  token = var.do_token
+}
+
+resource "digitalocean_droplet" "dev_vm" {
+  name   = "tiation-dev"
+  image  = "ubuntu-24-04-x64"
+  region = "syd1"
+  size   = "s-2vcpu-4gb"
+  ssh_keys = [var.ssh_fingerprint]
+}
+
+output "ip" {
+  value = digitalocean_droplet.dev_vm.ipv4_address
+}
+```
+
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+### Minimal Ansible play (configure the droplet)
+
+```yaml
+# inventory.ini (generated from Terraform output)
+[dev]
+34.101.12.34 ansible_user=root
+
+# playbook.yml
+---
+- hosts: dev
+  become: true
+  tasks:
+    - name: Install Docker
+      apt:
+        pkg: docker.io
+        state: present
+        update_cache: true
+    - name: Pull Theia image
+      docker_container:
+        name: theia
+        image: ghcr.io/yourorg/theia:latest
+        ports: ["3000:3000"]
+        restart_policy: always
+```
+
+```bash
+ansible-playbook -i inventory.ini playbook.yml
+```
+
+---
+
+## Choosing when to use which
+
+| Task                                         | Use Terraform?                     | Use Ansible? |
+| -------------------------------------------- | ---------------------------------- | ------------ |
+| Create a Backblaze B2 bucket                 | **Yes**                            | No           |
+| Spin up or resize VM / add DNS record        | **Yes**                            | No           |
+| Patch package list on 20 servers             | No                                 | **Yes**      |
+| Deploy a new version of your Theia container | Optional (Helm/Terraform)          | **Yes**      |
+| Rotate SSH keys across fleet                 | No                                 | **Yes**      |
+| Full disaster‑recovery rebuild               | **Terraform apply** → then Ansible | Both         |
+
+---
+
+### Quick mental model
+
+* **“Cattle not pets”** ⇒ Start with **Terraform**.
+* **“SSH in and tweak”** ⇒ Capture that tweak in **Ansible** so it’s repeatable.
+* **CI/CD** just chains them in order, giving you audit logs, rollbacks, and reproducibility.
+
+---
+
+Where to from here?
+
+* Create a **starter repo** with Terraform + Ansible + GitHub Actions scaffolding.
+* Take a deeper dive into writing *idempotent* Ansible tasks.
+* Walk-through elf‑hosted GitHub runners to speed up these pipelines.
