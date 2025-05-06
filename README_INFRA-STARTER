@@ -1,0 +1,90 @@
+**Planning repo scaffolding**
+
+# Tiation Infra Starter
+
+This repository glues **Terraform**, **Ansible**, and **GitHub Actions** together so you can spin up infrastructure, configure it, and deploy branded Theia — all from one place.
+
+```
+.
+├── .github/workflows/      # CI/CD
+├── terraform/              # Infra‑as‑Code
+└── ansible/                # Host configuration
+```
+
+1. **Terraform** provisions a VM + DNS (DigitalOcean & Cloudflare by default).
+2. **Ansible** installs Docker, Tailscale and runs the branded Theia container.
+3. **GitHub Actions** automate:
+
+   • `terraform plan / apply`
+
+   • Ansible runs after apply
+
+   • Nightly Backblaze backups
+
+   • Monthly IPFS snapshot
+
+> Fill in your secrets in the repo → *Settings → Secrets & Variables*.
+
+
+
+### 🚀 Starter repo created!
+
+[Download the starter kit](sandbox:/mnt/data/tiation_infra_starter.zip)
+
+It contains:
+
+```
+.
+├── README.md                   # Quick‑start guide
+├── terraform/                  # DigitalOcean + Cloudflare sample
+├── ansible/                    # Playbook that installs & runs branded Theia
+└── .github/
+    └── workflows/              # Terraform plan + Ansible follow‑up
+```
+
+---
+
+## 🟢 How Ansible “knows” it’s idempotent
+
+1. **Module design**
+   Most core modules compare the **desired state** you declare with the **current state** on the host.
+   *Example*: `apt:` will run `apt-get install` only if the package isn’t already the requested version.
+
+2. **`changed` flag**
+   Each task returns either `changed=false` (nothing done) or `changed=true` (state mutated).
+   Your play recap shows this, and CI pipelines can fail if unexpected changes appear.
+
+3. **Check‑mode (`--check`)**
+   Run‑through that simulates tasks. Modules report what **would** change without touching the host.
+
+4. **Stat / checksum tricks**
+
+   * **File modules** compute hashes before copying.
+   * **Lineinfile / blockinfile** edit only if the exact text is missing.
+   * **docker\_container** inspects the container spec before recreating it.
+
+5. **Idempotent patterns** you control
+
+   * Use *declarative* modules (e.g., `apt`, `service`, `user`) instead of raw `shell`.
+   * When you must use `command/shell`, add guards like `creates=` or `unless=`.
+   * Leverage **handlers**: run expensive steps only when a prerequisite task reports `changed=true`.
+
+6. **Testing tools**
+
+   * **`ansible-lint`** flags non‑idempotent patterns.
+   * **Molecule** can spin up a container/VM, apply the playbook twice, and assert zero changes on the second run.
+
+> **Rule of thumb:** if you can run `ansible-playbook …` twice in a row and see “changed=0”, your playbook is idempotent.
+
+---
+
+### Next steps
+
+1. Unzip the kit, set secrets, and push to an empty GitHub repo.
+2. Run `terraform init` & `apply` locally once, or let the **Terraform** workflow do it after you add secrets.
+3. Tweak `ansible/playbook.yml` to point at your branded Theia image and any extra hardening tasks.
+4. Try `ansible-playbook -i inventory.ini playbook.yml --check` to watch idempotency in action.
+
+Need help expanding the playbook check my other work!
+
+Created 2025-05-06.
